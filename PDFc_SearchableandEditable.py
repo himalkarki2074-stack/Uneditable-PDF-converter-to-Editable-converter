@@ -7,6 +7,9 @@ import sys
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+import tempfile
 
 def check_dependencies():
     """Check if required packages are installed"""
@@ -54,23 +57,29 @@ def check_dependencies():
     
     return True
 
-def extract_text_from_page(page, dpi=200):
-    """Extract text from a PDF page using OCR"""
+def extract_text_from_page(page, dpi=300):
+    """Extract text from a PDF page using OCR with improved settings"""
     try:
-        # Convert page to image
+        # Convert page to high-quality image
         mat = fitz.Matrix(dpi/72, dpi/72)
-        pix = page.get_pixmap(matrix=mat)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
         img_data = pix.tobytes("png")
         
-        # Convert to PIL Image and perform OCR
+        # Convert to PIL Image
         image = Image.open(io.BytesIO(img_data))
-        text = pytesseract.image_to_string(image, config='--psm 6')
         
-        return text.strip(), image
+        # Improve OCR accuracy with custom configuration
+        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+        text = pytesseract.image_to_string(image, config=custom_config)
+        
+        # Get word bounding boxes for better placement
+        boxes = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+        
+        return text.strip(), image, boxes
     
     except Exception as e:
         print(f"Error processing page: {e}")
-        return "", None
+        return "", None, None
 
 def create_image_with_selectable_text(original_image, ocr_text, transparency=128):
     """
@@ -460,23 +469,140 @@ def extract_to_text_file(input_pdf_path, output_txt_path, dpi=200):
         print(f"❌ Error: {e}")
         return False
 
-if __name__ == "__main__":
+def create_editable_pdf(input_pdf_path, output_pdf_path, dpi=300):
+    """Create a fully editable PDF with properly embedded text"""
     
-    print("🛠️ Alternative PDF Converter (Avoids PyMuPDF Issues)")
+    if not os.path.exists(input_pdf_path):
+        print(f"❌ Input file not found: {input_pdf_path}")
+        return False
+    
+    try:
+        print(f"� Processing: {input_pdf_path}")
+        
+        # Open the PDF for reading
+        pdf_document = fitz.open(input_pdf_path)
+        total_pages = len(pdf_document)
+        
+        print(f"📄 Creating editable PDF with {total_pages} pages...")
+        
+        # Create temporary directory for intermediate files
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Process each page
+            page_paths = []
+            successful_pages = 0
+            
+            for page_num in range(total_pages):
+                print(f"📝 Page {page_num + 1}/{total_pages}...", end=" ", flush=True)
+                
+                try:
+                    page = pdf_document[page_num]
+                    
+                    # Extract text and get word positions
+                    text, image, boxes = extract_text_from_page(page, dpi)
+                    
+                    if text and image and boxes:
+                        # Create new PDF page with reportlab
+                        temp_pdf = os.path.join(temp_dir, f"page_{page_num}.pdf")
+                        page_width = image.width * 72.0 / dpi
+                        page_height = image.height * 72.0 / dpi
+                        
+                        c = canvas.Canvas(temp_pdf, pagesize=(page_width, page_height))
+                        
+                        # Add background image
+                        temp_img = os.path.join(temp_dir, f"page_{page_num}.png")
+                        image.save(temp_img, "PNG")
+                        c.drawImage(temp_img, 0, 0, width=page_width, height=page_height)
+                        
+                        # Add text layer with precise positioning
+                        c.setFont("Helvetica", 10)
+                        
+                        # Process words with their positions
+                        for i in range(len(boxes['text'])):
+                            if boxes['conf'][i] > 0:  # Skip low confidence or empty text
+                                word = boxes['text'][i].strip()
+                                if word:
+                                    # Convert coordinates to PDF space
+                                    x = boxes['left'][i] * 72.0 / dpi
+                                    # Convert y-coordinate (PDF coordinates start from bottom)
+                                    y = page_height - (boxes['top'][i] + boxes['height'][i]) * 72.0 / dpi
+                                    
+                                    # Make text selectable and editable
+                                    c.setFillColorRGB(0, 0, 0, 1)  # Black text
+                                    c.drawString(x, y, word)
+                        
+                        c.save()
+                        page_paths.append(temp_pdf)
+                        successful_pages += 1
+                        print("✓")
+                    else:
+                        print("○")
+                
+                except Exception as e:
+                    print(f"✗ ({str(e)[:30]})")
+                    continue
+            
+            # Merge all pages into final PDF
+            if successful_pages > 0:
+                output_doc = fitz.open()
+                
+                for page_path in page_paths:
+                    try:
+                        temp_doc = fitz.open(page_path)
+                        output_doc.insert_pdf(temp_doc)
+                        temp_doc.close()
+                    except Exception as e:
+                        print(f"\nWarning: Could not process temporary file {page_path}: {e}")
+                        continue
+                
+                try:
+                    # Save with optimization for editability
+                    output_doc.save(output_pdf_path,
+                                  deflate=True,
+                                  clean=True,
+                                  ascii=False,
+                                  pretty=False,
+                                  linear=True)
+                except Exception as e:
+                    print(f"\n❌ Error saving final PDF: {e}")
+                    return False
+                finally:
+                    output_doc.close()
+                
+                print(f"\n✅ Created editable PDF successfully!")
+                print(f"📄 Processed {successful_pages}/{total_pages} pages")
+                
+                # Show file sizes
+                input_size = os.path.getsize(input_pdf_path) / (1024*1024)
+                output_size = os.path.getsize(output_pdf_path) / (1024*1024)
+                print(f"📊 Input size: {input_size:.1f} MB")
+                print(f"📊 Output size: {output_size:.1f} MB")
+                
+                return True
+            
+            return False
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
+    finally:
+        if 'pdf_document' in locals():
+            pdf_document.close()
+
+if __name__ == "__main__":
+    print("📝 Enhanced PDF Converter (Creates Editable PDFs)")
     print("=" * 55)
     
     # Check dependencies
     if not check_dependencies():
-        print("\n❌ Please install missing dependencies first:")
-        print("pip install PyMuPDF pytesseract Pillow reportlab")
-        input("Press Enter to exit...")
+        print("\n❌ Please install missing dependencies first.")
         sys.exit(1)
     
     # Get PDF files
     current_dir = os.getcwd()
     print(f"\nCurrent directory: {current_dir}")
     
-    pdf_files = [f for f in os.listdir('.') if f.lower().endswith('.pdf') and not f.startswith(('selectable_', 'editable_', 'robust_'))]
+    pdf_files = [f for f in os.listdir('.') if f.lower().endswith('.pdf') 
+                 and not f.startswith(('editable_', 'searchable_', 'overlay_'))]
     
     if not pdf_files:
         print("❌ No PDF files found")
@@ -500,52 +626,22 @@ if __name__ == "__main__":
     
     print(f"\n📄 Selected: {os.path.basename(selected_file)}")
     
-    # Choose method
-    print(f"\n🔧 Choose method (No PyMuPDF text insertion issues):")
-    print("1. PDF with visible text overlay (selectable)")
-    print("2. PDF with invisible text layer (searchable)")
-    print("3. Clean text-only PDF (editable)")
-    print("4. Extract to text file (.txt)")
+    # Quality settings
+    quality = input("\nUse high quality processing? (y/n): ").strip().lower()
+    dpi = 300 if quality in ['y', 'yes'] else 200
     
-    try:
-        method = int(input("\nSelect method (1-4): "))
-        
-        # Quality setting
-        quality = input("\nHigh quality OCR? (y/n): ").strip().lower()
-        dpi = 300 if quality in ['y', 'yes'] else 200
-        
-        base_name = os.path.splitext(os.path.basename(selected_file))[0]
-        
-        print(f"\n🚀 Starting conversion (DPI={dpi})...")
-        print("This method avoids PyMuPDF text insertion completely!")
-        
-        confirm = input("\nProceed? (y/n): ").strip().lower()
-        if confirm not in ['y', 'yes', '']:
-            sys.exit(0)
-        
-        success = False
-        
-        if method == 1:
-            output_file = f"overlay_{base_name}.pdf"
-            success = create_pdf_with_reportlab(selected_file, output_file, dpi, add_text_overlay=True)
-            
-        elif method == 2:
-            output_file = f"searchable_{base_name}.pdf"
-            success = create_pdf_with_reportlab(selected_file, output_file, dpi, add_text_overlay=False)
-            
-        elif method == 3:
-            output_file = f"clean_text_{base_name}.pdf"
-            success = create_text_only_pdf_clean(selected_file, output_file, dpi)
-            
-        elif method == 4:
-            output_file = f"extracted_{base_name}.txt"
-            success = extract_to_text_file(selected_file, output_file, dpi)
-        
+    base_name = os.path.splitext(os.path.basename(selected_file))[0]
+    output_file = f"editable_{base_name}.pdf"
+    
+    print(f"\n🚀 Creating editable PDF...")
+    print(f"Input: {selected_file}")
+    print(f"Output: {output_file}")
+    print(f"Quality: {dpi} DPI")
+    
+    confirm = input("\nProceed? (y/n): ").strip().lower()
+    if confirm in ['y', 'yes', '']:
+        success = create_editable_pdf(selected_file, output_file, dpi)
         if success:
-            print(f"\n🎉 Success! Output: {output_file}")
-            print("\n💡 This method completely avoids PyMuPDF text insertion issues!")
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
+            print(f"\n🎉 Successfully created editable PDF: {output_file}")
     
     input("\nPress Enter to exit...")
