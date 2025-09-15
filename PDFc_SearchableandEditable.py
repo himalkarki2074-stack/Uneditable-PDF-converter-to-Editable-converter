@@ -68,9 +68,9 @@ def extract_text_from_page(page, dpi=300):
         # Convert to PIL Image
         image = Image.open(io.BytesIO(img_data))
         
-        # Improve OCR accuracy with custom configuration
-        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-        text = pytesseract.image_to_string(image, config=custom_config)
+        # Improve OCR accuracy with enhanced configuration
+        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1 --dpi 300 -c tessedit_char_blacklist=|"</>" -c tessedit_do_invert=0'
+        text = pytesseract.image_to_string(image, config=custom_config, lang='eng')
         
         # Get word bounding boxes for better placement
         boxes = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
@@ -526,7 +526,29 @@ def create_editable_pdf(input_pdf_path, output_pdf_path, dpi=300):
                                     # Convert y-coordinate (PDF coordinates start from bottom)
                                     y = page_height - (boxes['top'][i] + boxes['height'][i]) * 72.0 / dpi
                                     
-                                    # Make text selectable and editable
+                                    # Calculate font size based on the height of the word box
+                                    font_size = boxes['height'][i] * 72.0 / dpi
+                                    # Keep font size within reasonable bounds
+                                    font_size = max(min(font_size, 14), 8)
+                                    
+                                    # Set font and size
+                                    c.setFont("Helvetica", font_size)
+                                    
+                                    # Add small spacing between words
+                                    word_width = c.stringWidth(word, "Helvetica", font_size)
+                                    space_width = c.stringWidth(" ", "Helvetica", font_size)
+                                    
+                                    # Check if this is a new line by comparing y-coordinates with previous word
+                                    if i > 0:
+                                        prev_y = page_height - (boxes['top'][i-1] + boxes['height'][i-1]) * 72.0 / dpi
+                                        if abs(y - prev_y) < font_size/2:  # Same line
+                                            # Add space only if words are not too far apart
+                                            prev_x = boxes['left'][i-1] * 72.0 / dpi
+                                            prev_width = boxes['width'][i-1] * 72.0 / dpi
+                                            if (x - (prev_x + prev_width)) < space_width * 3:
+                                                x += space_width
+                                    
+                                    # Make text selectable and editable with improved spacing
                                     c.setFillColorRGB(0, 0, 0, 1)  # Black text
                                     c.drawString(x, y, word)
                         
