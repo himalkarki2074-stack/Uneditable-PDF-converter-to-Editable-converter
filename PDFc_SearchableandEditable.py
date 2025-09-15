@@ -1,6 +1,9 @@
 import fitz  # PyMuPDF - only for reading
 import pytesseract
 from PIL import Image, ImageDraw, ImageFont
+
+# Set Tesseract OCR path
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 import io
 import os
 import sys
