@@ -560,8 +560,7 @@ def create_editable_pdf(input_pdf_path, output_pdf_path, dpi=300):
                                   deflate=True,
                                   clean=True,
                                   ascii=False,
-                                  pretty=False,
-                                  linear=True)
+                                  pretty=False)
                 except Exception as e:
                     print(f"\n❌ Error saving final PDF: {e}")
                     return False
